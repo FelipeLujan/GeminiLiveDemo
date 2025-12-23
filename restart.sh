@@ -1,10 +1,10 @@
 #!/bin/bash
 
 echo "🔄 Stopping existing servers..."
-# Kill process on port 8000 (Backend)
-lsof -ti:8000 | xargs kill -9 2>/dev/null
-# Kill process on port 3000 (Web)
-lsof -ti:3000 | xargs kill -9 2>/dev/null
+# Kill process on port 8000 (Backend) - Only if it's Python
+lsof -i :8000 | awk '$1 ~ /Python|python/ {print $2}' | xargs kill -9 2>/dev/null
+# Kill process on port 3000 (Web) - Only if it's node
+lsof -i :3000 | awk '$1 == "node" {print $2}' | xargs kill -9 2>/dev/null
 
 echo "✓ Stopped backend"
 echo "✓ Stopped web server"
@@ -14,11 +14,8 @@ echo "🚀 Starting servers..."
 
 # Start Backend
 cd server
-if [ -d "venv" ]; then
-    source venv/bin/activate
-fi
 # Run in background, redirect logs
-nohup python main.py > /tmp/backend.log 2>&1 &
+nohup ./venv/bin/python main.py > /tmp/backend.log 2>&1 &
 BACKEND_PID=$!
 echo "✓ Backend started (PID: $BACKEND_PID)"
 

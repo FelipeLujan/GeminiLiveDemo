@@ -52,13 +52,81 @@ if not GOOGLE_API_KEY:
     logger.error("GOOGLE_API_KEY not set. API calls will fail.")
     raise ValueError("GOOGLE_API_KEY is required")
 
-MODEL = "gemini-2.5-flash-native-audio-preview-09-2025"
+MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 SAMPLE_RATE = 16000  # Input audio sample rate
 OUTPUT_SAMPLE_RATE = 24000  # Output audio sample rate
 
 # Initialize Gemini client
 client = genai.Client(api_key=GOOGLE_API_KEY)
 
+SYSTEM_INSTRUCTION = """You are a hidden live negotiation coach for the user. Your goal is to help the user negotiate effectively in real-time using the principles from the book "Never Split the Difference" by Chris Voss.
+
+You will listen to the audio of the negotiation between the user and their counterpart. You must provide real-time actionable suggestions to the user via audio.
+
+Your responsibilities:
+1.  **Active Listening**: Analyze the conversation for key phrases, tones, and dynamics.
+2.  **Methodology**: Apply techniques like Mirroring, Labeling, Tactical Empathy, Calibrated Questions, and Effective Pauses.
+3.  **Tool Use**: You have access to tools that you MUST use to provide specific recommendations. When you identify a situation where a technique is applicable, call the corresponding tool (e.g., `suggest_mirroring`, `suggest_labeling`).
+4.  **Feedback**: Provide concise, whisper-like advice to the user. Do not speak to the counterpart. You are coaching the user, not participating in the negotiation directly.
+
+**CRITICAL: Output Format**
+Your audio output MUST follow this strict structure: `<technique>, <what to say>`.
+Examples:
+-   **Calibrated Question**: "Ask, how am I supposed to do that?" or "Ask, what makes you say that?"
+-   **Mirroring**: "Mirror, [last 3 words]" (e.g., "Mirror, fair price?")
+-   **Labeling**: "Label, it seems like you are upset."
+-   **Pause**: "Pause." (Just say "Pause" to instruct the user to be silent)
+-   **Tactical Empathy**: "Empathy, I understand your position."
+
+Key Techniques to Watch For and Suggest:
+-   **Mirroring**: Repeat the last 1-3 words (or critical 1-3 words) of what the counterpart said to build rapport and encourage them to elaborate.
+-   **Labeling**: Identify and verbalize the counterpart's emotions (e.g., "It seems like you're frustrated about...") to make them feel understood and diffuse negative emotions.
+-   **Tactical Empathy**: Demonstrate that you see the situation from their perspective.
+-   **Calibrated Questions**: Ask "How" or "What" questions to ask for help and guide the counterpart to your solution (e.g., "How am I supposed to do that?"). Avoid "Why" questions which can sound accusatory.
+-   **Effective Pauses**: Use silence to create pressure and encourage the counterpart to talk.
+
+Always stay calm, supportive, and focused on the user's success. Your output should be short and directive so the user can listen and act while negotiating."""
+
+# Tool definitions
+TOOLS = [
+    {"function_declarations": [
+        {
+            "name": "suggest_mirroring",
+            "description": "Suggests mirroring the last few words spoken by the counterpart to build rapport.",
+            "behavior": "NON_BLOCKING"
+        },
+        {
+            "name": "suggest_labeling",
+            "description": "Suggests labeling the counterpart's emotions to demonstrate understanding.",
+            "behavior": "NON_BLOCKING"
+        },
+        {
+            "name": "suggest_tactical_empathy",
+            "description": "Suggests using tactical empathy to acknowledge the counterpart's perspective and build trust.",
+            "behavior": "NON_BLOCKING"
+        },
+        {
+            "name": "suggest_calibrated_questions",
+            "description": "Suggests asking calibrated questions to guide the conversation and gather information.",
+            "behavior": "NON_BLOCKING"
+        },
+        {
+            "name": "suggest_effective_pauses",
+            "description": "Suggests using effective pauses to create a sense of urgency and encourage the counterpart to fill the silence with valuable information.",
+            "behavior": "NON_BLOCKING"
+        },
+        {
+            "name": "provide_real_time_feedback",
+            "description": "Provides real-time feedback on the negotiation dynamics and suggests adjustments to the user's approach.",
+            "behavior": "NON_BLOCKING"
+        },
+        {
+            "name": "summarize_negotiation",
+            "description": "Summarizes the key points and outcomes of the negotiation for post-negotiation analysis.",
+            "behavior": "NON_BLOCKING"
+        }
+    ]}
+]
 
 class GeminiSession:
     """Manages a Gemini Live API session using the official SDK."""
@@ -78,6 +146,8 @@ class GeminiSession:
             # Configure the session
             config = types.LiveConnectConfig(
                 response_modalities=["AUDIO"],
+                tools=TOOLS,
+                system_instruction=types.Content(parts=[types.Part(text=SYSTEM_INSTRUCTION)]),
             )
             
             # Connect to Gemini Live API - get the actual session object
@@ -124,7 +194,35 @@ class GeminiSession:
         except Exception as e:
             logger.error(f"Error sending audio to Gemini: {e}")
             self.is_active = False
-    
+    async def handle_tool_call(self, tool_call):
+        """Handle tool calls from Gemini."""
+        try:
+            function_responses = []
+            for fc in tool_call.function_calls:
+                logger.info(f"Tool call received: {fc.name} with args: {fc.args}")
+                
+                # Send notification to client
+                await self.client_ws.send_json({
+                    "type": "tool_call",
+                    "tool": fc.name,
+                    "args": fc.args
+                })
+                
+                function_responses.append(types.FunctionResponse(
+                    id=fc.id,
+                    name=fc.name,
+                    response={
+                        "result": "ok",
+                        "scheduling": "SILENT"
+                    }
+                ))
+            
+            await self.session.send_tool_response(function_responses=function_responses)
+            logger.info("Sent tool responses")
+            
+        except Exception as e:
+            logger.error(f"Error handling tool call: {e}")
+
     async def receive_responses(self):
         """Receive and process responses from Gemini."""
         try:
@@ -135,6 +233,10 @@ class GeminiSession:
                     if not self.is_active:
                         break
                     
+                    # Handle tool calls
+                    if response.tool_call:
+                        await self.handle_tool_call(response.tool_call)
+
                     # Handle audio responses - only from response.data (not from server_content)
                     if response.data:
                         audio_data = base64.b64encode(response.data).decode('utf-8')

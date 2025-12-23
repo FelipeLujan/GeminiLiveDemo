@@ -74,7 +74,7 @@ RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE = 512
 
 host = "generativelanguage.googleapis.com"
-model = "gemini-2.5-flash-native-audio-latest"
+model = "gemini-2.5-flash-native-audio-preview-12-2025"
 DEFAULT_MODE="camera"
 
 
